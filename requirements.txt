@@ -1,0 +1,10 @@
+deap
+numpy
+pandas
+jupyter
+ipykernel
+pymoo
+scipy
+nbconvert
+matplotlib
+seaborn

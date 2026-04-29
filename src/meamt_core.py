@@ -1,0 +1,353 @@
+import random
+import bisect
+import numpy as np
+from deap import creator, base, tools, benchmarks
+from deap.benchmarks.tools import hypervolume
+from pymoo.indicators.hv import HV
+
+# ==========================================
+# 1. SETUP DE CLASSES E TOOLBOX
+# ==========================================
+def setup_deap_classes(n_obj):
+    """Inicializa as classes do DEAP com base no número de objetivos."""
+    if not hasattr(creator, "FitnessMin"):
+        creator.create("FitnessMin", base.Fitness, weights=(-1.0,) * n_obj)
+        creator.create("Individual", list, fitness=creator.FitnessMin, Parent_Table=None)
+        creator.create("SubPopulation", list, score=0.0)
+
+def build_toolbox(funcao_avaliacao, ind_size, n_pop, n_obj):
+    """Constrói o toolbox do DEAP de forma dinâmica para qualquer benchmark."""
+    setup_deap_classes(n_obj)
+    
+    toolbox = base.Toolbox()
+    toolbox.register("attr_float", random.random)
+    toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_float, n=ind_size)
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual, n=n_pop)
+    
+    # Avaliação dinâmica (passada por parâmetro)
+    toolbox.register("evaluate", funcao_avaliacao) 
+    toolbox.register("mate", tools.cxSimulatedBinaryBounded, eta=20.0, low=0.0, up=1.0)
+    toolbox.register("mutate", tools.mutPolynomialBounded, eta=20.0, low=0.0, up=1.0, indpb=1.0/ind_size)
+    
+    return toolbox
+
+
+def build_toolbox_knapsack(func_eval, ind_size, n_pop, n_obj):
+    creator.create("FitnessMax", base.Fitness, weights=(1.0,)*n_obj)
+    creator.create("Individual", list, fitness=creator.FitnessMax, Parent_Table=None)
+    creator.create("SubPopulation", list, score=0.0)
+    
+    
+    toolbox = base.Toolbox()
+    toolbox.register("attr_bool", random.randint, 0, 1)
+    toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_bool, n=ind_size)
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual, n=n_pop)
+    
+    toolbox.register("evaluate", func_eval)
+    toolbox.register("mate", tools.cxTwoPoint)
+    toolbox.register("mutate", tools.mutFlipBit, indpb=1/ind_size)
+    
+    return toolbox
+
+def create_knapsack_instance(n_itens, n_obj, seed=42):
+    np.random.seed(seed)
+    
+    values = np.random.randint(10, 101, size=(n_itens, n_obj))
+    weights = np.random.randint(10, 101, size=(n_itens, n_obj))
+    
+    capacities = np.sum(weights, axis=0) * 0.5
+    
+    max_profits = np.sum(values, axis=0)
+    
+    return values, weights, capacities, max_profits
+def evaluate_knapsack_individual(ind, values, weights, capacities, max_profits):
+    ind_np = np.array(ind)
+    
+    eval = np.dot(ind_np, values)
+    
+    wgts = np.dot(ind_np, weights)
+    
+    if np.any(wgts > capacities):
+        return (0.0,)* len(capacities)
+    
+    eval_norm = eval / max_profits
+    
+    return tuple(eval_norm)
+# ==========================================
+# 2. MÉTRICAS E FRONTEIRAS
+# ==========================================
+import numpy as np
+
+def generate_zdt1_front_true(n_points, n_size):
+    samples2 = np.array([[0]*(n_size - 1)]*n_points)
+    samples1 = np.random.uniform(low=0.0, high=1.0, size=(n_points, 1))
+    samples = np.column_stack((samples1, samples2)).tolist()
+    pf_ = [benchmarks.zdt1(ind) for ind in samples]
+    pf_ = np.array(pf_).tolist()
+    return pf_
+
+
+def generate_zdt2_front_true(n_points, n_size):
+    samples2 = np.array([[0]*(n_size - 1)]*n_points)
+    samples1 = np.random.uniform(low=0.0, high=1.0, size=(n_points, 1))
+    samples = np.column_stack((samples1, samples2)).tolist()
+    pf_ = [benchmarks.zdt2(ind) for ind in samples]
+    pf_ = np.array(pf_).tolist()
+    return pf_
+
+def generate_zdt4_front_true(n_points, n_size):
+    samples2 = np.array([[0]*(n_size - 1)]*n_points)
+    samples1 = np.random.uniform(low=0.0, high=1.0, size=(n_points, 1))
+    samples = np.column_stack((samples1, samples2)).tolist()
+    pf_ = [benchmarks.zdt4(ind) for ind in samples]
+    pf_ = np.array(pf_).tolist()
+    return pf_
+
+
+def generate_zdt6_front_true(n_points, n_size):
+    samples2 = np.array([[0]*(n_size - 1)]*n_points)
+    samples1 = np.random.uniform(low=0.0, high=1.0, size=(n_points, 1))
+    samples = np.column_stack((samples1, samples2)).tolist()
+    pf_ = [benchmarks.zdt6(ind) for ind in samples]
+    pf_ = np.array(pf_).tolist()
+    return pf_
+    
+    
+
+
+def generate_dtlz1_front_random(n_obj, n_points):
+    """Generates points on the DTLZ1 pareto front"""
+    pf = np.abs(np.random.dirichlet(alpha=(1,)*n_obj, size=n_points)*0.5)
+    return pf
+
+def generate_zdt3_front_true(n_points):
+    """
+    Gera a fronteira de Pareto verdadeira para o ZDT3.
+    """
+    # Para o ZDT3, f1 varia de 0 a 1 e g(x) = 1 na fronteira ótima
+    f1 = np.linspace(0, 1, n_points)
+    
+    # Equação do f2 para o ZDT3
+    f2 = 1 - np.sqrt(f1) - f1 * np.sin(10 * np.pi * f1)
+    points = np.column_stack((f1, f2))
+    
+    # O ZDT3 é descontínuo. Precisamos filtrar os pontos dominados
+    non_dominated = []
+    min_f2 = float('inf')
+    
+    # Como f1 já está ordenado de forma crescente, 
+    # basta garantir que f2 está sempre diminuindo
+    for p in points:
+        if p[1] < min_f2:
+            non_dominated.append(p)
+            min_f2 = p[1]
+            
+    return np.array(non_dominated)
+def generate_dtlz3_front_random(n_obj, n_points):
+    """Generates points on the DTLZ3 Pareto front (Unit Hypersphere)."""
+    samples = np.abs(np.random.normal(size=(n_points, n_obj)))
+    radius = np.sqrt(np.sum(samples**2, axis=1, keepdims=True))
+    pf = samples / radius
+    return pf
+
+def calculate_igd_plus(pareto_front_true, pareto_front_approx):
+    """Calculates the IGD+ (Inverted Generational Distance Plus)."""
+    pf_true = np.atleast_2d(pareto_front_true)
+    pf_approx = np.atleast_2d(pareto_front_approx)
+    dists = []
+
+    for z in pf_true:
+        diff = pf_approx - z
+        diff = np.maximum(diff, 0)
+        d_plus = np.sqrt(np.sum(diff**2, axis=1))
+        min_d_plus = np.min(d_plus)
+        dists.append(min_d_plus)
+
+    return np.mean(dists)
+
+# ==========================================
+# 3. OPERADORES DO MEAMT
+# ==========================================
+def calc_combined_fitness(ind, table_idx, n_obj):
+    """Calculates the combined fitness of an individual with respect to his table."""
+    fit = 0
+    for b in range(n_obj):
+        # Desloca os bits e verifica se o bit na posição 'b' é 1
+        if (table_idx >> b) & 1:
+            # Pega o valor correspondente de trás pra frente (como no seu original)
+            fit += ind.fitness.wvalues[n_obj - 1 - b]
+    return -fit
+
+def gen_inicial_tables(pop_ini, num_tables, table_size, n_obj):
+    """Inserts inicial population in the tables."""
+    tables = dict()
+    # Tabel 0: ND (Non Dominated)
+    fronteira = tools.sortNondominated(pop_ini, len(pop_ini), first_front_only=True)[0]
+    tables[0] = creator.SubPopulation(fronteira[:table_size * 10]) 
+    tables[0].score = 0.0
+
+    # Tabel 1 to N
+    for i in range(1, num_tables):
+        # Repassando n_obj para o lambda
+        pop_ordenada = sorted(pop_ini, key=lambda ind: calc_combined_fitness(ind, i, n_obj))
+        tables[i] = creator.SubPopulation(pop_ordenada[:table_size])
+        tables[i].score = 0.0
+    return tables
+
+def select_parents(tables, num_tables):
+    """Selects parents based on table scores."""
+    selected = []
+    for _ in range(2):
+        random1 = random.randint(0, num_tables - 1)
+        random2 = random.randint(0, num_tables - 1)
+
+        if len(tables[random1]) == 0: winner = random2
+        elif len(tables[random2]) == 0: winner = random1
+        elif tables[random1].score >= tables[random2].score:
+            winner = random1
+        else:
+            winner = random2
+
+        ind = random.choice(tables[winner])
+        ind.Parent_Table = winner
+        selected.append(ind)
+    return selected
+
+def insert_in_tables(tables, num_tables, off, max_table_size, n_obj):
+    """Inserts offspring into the appropriate tables and updates scores."""
+    # 1. Insert on table ND (0)
+    tabela_nd = tables[0]
+    
+    nova_selecao = update_nd_table(tabela_nd, off, max_table_size)
+    tabela_nd[:] = nova_selecao
+
+    # Se off is in the table -> increase score
+    if any(ind is off for ind in tabela_nd):
+        if off.Parent_Table is not None:
+            tables[off.Parent_Table].score += 1
+
+    # Try to insert in other tables
+    for i in range(1, num_tables):
+        bisect.insort(tables[i], off, key=lambda ind: calc_combined_fitness(ind, i, n_obj))
+    
+        # Keep only the best 'max_table_size' individuals
+        if len(tables[i]) > max_table_size:
+            removed_ind = tables[i].pop() # Drops the worst
+        
+        # If the offspring SURVIVED the truncation, reward the parent's table
+        if off is not removed_ind and off.Parent_Table is not None:
+            tables[off.Parent_Table].score += 1
+
+def calcular_hv_unico_pymoo(fronteira, ponto_referencia):
+    # Extrai os valores puros (sem os pesos)
+    fitness = [ind.fitness.values for ind in fronteira]
+    Fit = np.array(fitness)
+    
+    # Olha para o peso configurado no primeiro objetivo do primeiro indivíduo da tabela
+    if fronteira[0].fitness.weights[0] > 0:
+        # Se o peso é positivo (1.0), é Maximização (Mochila).
+        # Então invertemos a matriz para enganar o PyMoo!
+        Fit = -Fit
+    
+    # Se for negativo (-1.0), é Minimização (DTLZ), e o código pula o 'if'
+    # deixando o Fit intacto, do jeito que o PyMoo gosta.
+
+    ind = HV(ref_point=np.array(ponto_referencia))
+    return ind.do(Fit)
+
+def dominates(ind1, ind2):
+    """
+    Retorna True se ind1 domina ind2
+    """
+    fit1 = ind1.fitness.wvalues
+    fit2 = ind2.fitness.wvalues
+    
+    # Regra 1: ind1 não é pior em nenhum objetivo
+    nao_e_pior = all(f1 >= f2 for f1, f2 in zip(fit1, fit2))
+    # Regra 2: ind1 é estritamente melhor em pelo menos um objetivo
+    e_melhor = any(f1 > f2 for f1, f2 in zip(fit1, fit2))
+    
+    return nao_e_pior and e_melhor
+
+def update_nd_table(tabela_nd, offspring, max_table_size):
+    """
+    Atualiza a tabela de Não-Dominados (Tabela 0) de forma eficiente.
+    """
+    is_dominated = False
+    individuos_para_remover = []
+    
+    for i, individuo_atual in enumerate(tabela_nd):
+        if dominates(individuo_atual, offspring):
+            # Se alguém na tabela já domina o filho, paramos a busca. O filho é lixo.
+            is_dominated = True
+            break
+        elif dominates(offspring, individuo_atual):
+            # Se o filho domina o indivíduo atual, marcamos o atual para ser deletado
+            individuos_para_remover.append(i)
+            
+    # Se o filho não foi dominado por ninguém, ele merece entrar na tabela
+    if not is_dominated:
+        # 1. Removemos de trás para frente os indivíduos fracos (para não zoar os índices)
+        for i in reversed(individuos_para_remover):
+            del tabela_nd[i]
+            
+        # 2. Inserimos o novo filho campeão
+        tabela_nd.append(offspring)
+        
+        # 3. Truncamento de tamanho (Opcional)
+        if len(tabela_nd) > max_table_size*10:
+            tabela_nd.pop(random.randrange(len(tabela_nd))) 
+            
+    return tabela_nd
+
+# ==========================================
+# 4. LOOP PRINCIPAL
+# ==========================================
+def run(tables, pareto_front_true, num_tables, max_table_size, ngen, toolbox, cxpb, mutpb, ref_point_hv, n_obj, reset):
+    """Executa as gerações do algoritmo MEAMT (Versão Paralela)."""
+    logbook = tools.Logbook()
+    logbook.header = "gen", "hypervolume", "igd_plus"
+    
+    for gen in range(1, ngen + 1):
+        # Reset score
+        if gen%reset == 0:
+            for t in tables.values():     
+                t.score = 0.0
+                
+        for _ in range((max_table_size * num_tables) // 2):
+            offspring = []
+            parents = select_parents(tables, num_tables)
+
+            off1, off2 = toolbox.clone(parents[0]), toolbox.clone(parents[1])
+            off1.Parent_Table = parents[0].Parent_Table
+            off2.Parent_Table = parents[1].Parent_Table
+
+            if random.random() < cxpb:
+                toolbox.mate(off1, off2)
+                del off1.fitness.values, off2.fitness.values
+
+            if random.random() < mutpb:
+                toolbox.mutate(off1)
+                del off1.fitness.values
+            if random.random() < mutpb:
+                toolbox.mutate(off2)
+                del off2.fitness.values
+            
+            offspring.extend([off1, off2])
+            
+            invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
+            
+            fitnesses = toolbox.map(toolbox.evaluate, invalid_ind)
+
+            for ind, fit in zip(invalid_ind, fitnesses):
+                 ind.fitness.values = fit
+            for off in offspring:
+                 insert_in_tables(tables, num_tables, off, max_table_size,n_obj)
+            
+               
+        #hv_val = calcular_hv_unico_pymoo(tables[0], ref_point_hv)
+        #approx_front = np.array([ind.fitness.values for ind in tables[0]])
+        #igd_plus_val = calculate_igd_plus(pareto_front_true, approx_front)
+        #logbook.record(gen=gen, hypervolume=hv_val, igd_plus=igd_plus_val)
+        
+    return logbook
